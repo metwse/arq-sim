@@ -5,8 +5,8 @@ import random
 class Channel:
     """Two-state Markov channel with burst errors.
 
-    Models a Gilbert-Elliot channel where the channel alternates between
-    a good state (low BER) and a bad state (high BER).
+    Uses current state BER for frame error calculation. State transitions
+    are probabilistic based on Markov chain parameters.
     """
 
     STATE_GOOD = 0
@@ -25,7 +25,12 @@ class Channel:
     def reset(self):
         self.state = self.STATE_GOOD
 
-    def _transition(self):
+    def transmit_frame(self, frame_bits: int) -> bool:
+        """Simulate transmission of a frame through the channel."""
+        ber = self.good_ber if self.state == self.STATE_GOOD else self.bad_ber
+        p_no_error = (1.0 - ber) ** frame_bits
+        corrupted = self.rng.random() >= p_no_error
+
         if self.state == self.STATE_GOOD:
             if self.rng.random() < self.p_gb:
                 self.state = self.STATE_BAD
@@ -33,16 +38,4 @@ class Channel:
             if self.rng.random() < self.p_bg:
                 self.state = self.STATE_GOOD
 
-    def transmit_frame(self, frame_bits: int) -> bool:
-        """Simulate transmission of a frame through the channel.
-
-        Returns True if frame is corrupted, False otherwise.
-        """
-        ber = self.good_ber if self.state == self.STATE_GOOD else self.bad_ber
-
-        for _ in range(frame_bits):
-            self._transition()
-            if self.rng.random() < ber:
-                return True
-
-        return False
+        return corrupted

@@ -49,7 +49,8 @@ class SenderState:
         return seq >= self.base or seq < end
 
     def can_send(self) -> bool:
-        return self.next_seq != (self.base + self.window_size)
+        outstanding = len(self.buffer)
+        return outstanding < self.window_size
 
 
 @dataclass

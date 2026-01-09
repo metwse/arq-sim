@@ -85,7 +85,7 @@ class App(tk.Tk):
     def _run_simulation(self, config: SimulationConfig):
         try:
             sim = Simulation(config)
-            data = b'\x00' * (1024 * 1024)
+            data = b'\x00' * FILE_SIZE
             sim.load_data(data)
 
             def progress_cb(progress: float, msg: str):
@@ -124,7 +124,7 @@ class App(tk.Tk):
 
                     try:
                         sim = Simulation(config)
-                        data = b'\x00' * (1024 * 1024)
+                        data = b'\x00' * FILE_SIZE
                         sim.load_data(data)
                         result = sim.run()
 

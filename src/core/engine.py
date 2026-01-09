@@ -5,7 +5,7 @@ from .constants import CHANNEL_CONFIG
 from src.layers.physical import Channel
 from src.layers.link import SelectiveRepeatSender, SelectiveRepeatReceiver, \
     Frame, FrameType
-from src.layers.transport import Segment, TransportSender, TransportReceiver
+from src.layers.transport import TransportSender, TransportReceiver
 
 import random
 import time as time_module
@@ -43,7 +43,7 @@ class Simulation:
             self.rng
         )
 
-        max_seq = config['window_size'] * 2
+        max_seq = 2 ** 31
         timeout = self._calculate_timeout()
 
         self.sender = SelectiveRepeatSender(
@@ -153,8 +153,7 @@ class Simulation:
         ack, payloads = self.receiver.receive_frame(frame)
 
         for payload in payloads:
-            self.transport_rx.receive_segment(
-                    Segment(seq_num=0, payload=payload, is_last=False))
+            self.transport_rx.delivered_data.extend(payload)
 
         if ack:
             delay = (CHANNEL_CONFIG['reverse_delay'] +
@@ -164,6 +163,14 @@ class Simulation:
     def _handle_ack_arrival(self, ack: Frame):
         if ack.frame_type == FrameType.ACK:
             self.sender.receive_ack(ack.seq_num)
+        elif ack.frame_type == FrameType.NAK:
+            if ack.seq_num in self.sender.state.timers:
+                frame = self.sender.state.buffer.get(ack.seq_num)
+                if frame:
+                    self._transmit_data_frame(frame)
+                    self.sender.state.timers[ack.seq_num].expiry_time = (
+                        self.current_time + self.sender.timeout
+                    )
 
     def _build_result(self) -> SimulationResult:
         total_time = self.current_time if self.current_time > 0 else 1.0
