@@ -211,5 +211,4 @@ class Simulation:
             avg_rtt=avg_rtt,
             retransmissions=self.stats.retransmissions,
             total_time=total_time,
-            bytes_sent=self.transport_tx.offset if self.transport_tx else 0
         )

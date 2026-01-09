@@ -32,12 +32,10 @@ class SimulationResult(TypedDict):
 
     window_size: int
     frame_payload_size: int
-    run_id: int
     goodput: float
     retransmissions: int
     avg_rtt: float
     utilization: float
-    buffer_events: int
     total_time: float
 
 
