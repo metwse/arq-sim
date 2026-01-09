@@ -1,9 +1,8 @@
 """Worker functions for multiprocessing simulation runs."""
-from src.core.constants import (
+from .constants import \
     TRANSPORT_HEADER_SIZE, LINK_HEADER_SIZE, RECEIVER_BUFFER_SIZE, FILE_SIZE
-)
-from src.core.types import SimulationConfig, SimulationResult
-from src.core.engine import Simulation
+from .types import SimulationConfig, SimulationResult
+from .engine import Simulation
 
 from typing import Callable, Optional
 

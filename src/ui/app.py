@@ -1,9 +1,8 @@
 from .panels import ControlPanel, ParameterPanel, ResultsPanel, StatusBar
 
 from src.core.constants import \
-    WINDOW_SIZES, FRAME_PAYLOADS, RUNS_PER_CONFIG, FILE_SIZE
+    WINDOW_SIZES, FRAME_PAYLOADS, RUNS_PER_CONFIG
 from src.core.types import SimulationConfig
-from src.core.engine import Simulation
 from src.core.worker import run_single_simulation
 
 import os
