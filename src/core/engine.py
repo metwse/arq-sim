@@ -1,4 +1,4 @@
-"""Core simulation engine for ARQ protocol."""
+"""Core simulation engine for ARQ protocol - optimized version."""
 from .types import SimulationConfig, SimulationResult, ProgressCallback
 from .constants import CHANNEL_CONFIG
 
@@ -7,6 +7,7 @@ from src.layers.link import SelectiveRepeatSender, SelectiveRepeatReceiver, \
     Frame, FrameType
 from src.layers.transport import TransportSender, TransportReceiver
 
+import heapq
 import random
 import time as time_module
 from dataclasses import dataclass
@@ -58,7 +59,8 @@ class Simulation:
 
         self.current_time = 0.0
         self.stats = SimulationStats()
-        self.events: list[tuple[float, str, Frame]] = []
+        self._events: list[tuple[float, int, str, Frame]] = []
+        self._event_counter = 0
 
     def _calculate_timeout(self) -> float:
         rtt = (CHANNEL_CONFIG['forward_delay'] +
@@ -72,8 +74,9 @@ class Simulation:
 
     def _schedule_event(self, delay: float, event_type: str, data: Frame):
         event_time = self.current_time + delay
-        self.events.append((event_time, event_type, data))
-        self.events.sort(key=lambda x: x[0])
+        self._event_counter += 1
+        heapq.heappush(self._events,
+                       (event_time, self._event_counter, event_type, data))
 
     def load_data(self, data: bytes):
         segment_size = (self.config['frame_payload_size'] -
@@ -89,25 +92,39 @@ class Simulation:
 
         self.stats.start_time = time_module.time()
         total_bytes = len(self.transport_tx.data)
+        last_progress_time = 0.0
+        progress_interval = 1
 
         while (self.transport_tx.has_data() or
                self.sender.has_pending() or
-               self.events):
+               self._events):
 
             self._try_send_frames()
 
-            expired = self.sender.check_timeouts(self.current_time)
-            for frame in expired:
-                self._transmit_data_frame(frame)
+            if self._events:
+                next_event_time = self._events[0][0]
 
-            if self.events:
+                expired = self.sender.check_timeouts(next_event_time)
+                for frame in expired:
+                    self._transmit_data_frame(frame)
+
                 self._process_next_event()
             else:
-                self.current_time += 0.001
+                expired = self.sender.check_timeouts(self.current_time)
+                for frame in expired:
+                    self._transmit_data_frame(frame)
+                if not self._events:
+                    self.current_time += 0.001
 
-            if progress_callback and total_bytes > 0:
-                progress = len(self.transport_rx.delivered_data) / total_bytes
-                progress_callback(progress, f"Time: {self.current_time:.3f}s")
+            if progress_callback:
+                if self.current_time - last_progress_time >= progress_interval:
+                    progress = \
+                        len(self.transport_rx.delivered_data) / total_bytes
+
+                    progress_callback(progress,
+                                      f"Time: {self.current_time:.1f}s")
+
+                    last_progress_time = self.current_time
 
         self.stats.end_time = time_module.time()
         self.stats.bytes_delivered = len(self.transport_rx.delivered_data)
@@ -141,7 +158,7 @@ class Simulation:
         self._schedule_event(delay, 'frame_arrive', frame)
 
     def _process_next_event(self):
-        event_time, event_type, data = self.events.pop(0)
+        event_time, _, event_type, data = heapq.heappop(self._events)
         self.current_time = event_time
 
         if event_type == 'frame_arrive':
@@ -168,6 +185,7 @@ class Simulation:
                 frame = self.sender.state.buffer.get(ack.seq_num)
                 if frame:
                     self._transmit_data_frame(frame)
+                    self.sender.retransmission_count += 1
                     self.sender.state.timers[ack.seq_num].expiry_time = (
                         self.current_time + self.sender.timeout
                     )
@@ -180,17 +198,18 @@ class Simulation:
         if self.stats.rtt_samples:
             avg_rtt = sum(self.stats.rtt_samples) / len(self.stats.rtt_samples)
 
-        theoretical_max = CHANNEL_CONFIG['bit_rate'] / 8
-        utilization = goodput / theoretical_max if theoretical_max > 0 else 0.0
+        utilization = 0.0
+        max_goodput = CHANNEL_CONFIG['bit_rate'] / 8
+        if max_goodput > 0:
+            utilization = goodput / max_goodput
 
         return SimulationResult(
             window_size=self.config['window_size'],
             frame_payload_size=self.config['frame_payload_size'],
-            run_id=self.config['seed'],
             goodput=goodput,
-            retransmissions=self.stats.retransmissions,
-            avg_rtt=avg_rtt,
             utilization=utilization,
-            buffer_events=self.stats.buffer_events,
-            total_time=total_time
+            avg_rtt=avg_rtt,
+            retransmissions=self.stats.retransmissions,
+            total_time=total_time,
+            bytes_sent=self.transport_tx.offset if self.transport_tx else 0
         )

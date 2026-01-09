@@ -1,14 +1,16 @@
 from .panels import ControlPanel, ParameterPanel, ResultsPanel, StatusBar
 
 from src.core.constants import \
-    WINDOW_SIZES, FRAME_PAYLOADS, RUNS_PER_CONFIG, FILE_SIZE, \
-    TRANSPORT_HEADER_SIZE, LINK_HEADER_SIZE, RECEIVER_BUFFER_SIZE
+    WINDOW_SIZES, FRAME_PAYLOADS, RUNS_PER_CONFIG, FILE_SIZE
 from src.core.types import SimulationConfig
 from src.core.engine import Simulation
+from src.core.worker import run_single_simulation
 
+import os
 import tkinter as tk
 from tkinter import ttk
 import threading
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 class App(tk.Tk):
@@ -23,6 +25,7 @@ class App(tk.Tk):
 
         self.running = False
         self.stop_requested = False
+        self._executor = None
 
         self._build_ui()
 
@@ -72,26 +75,25 @@ class App(tk.Tk):
         self.stop_requested = False
         self.controls.set_running(True)
         self.results.clear()
-        self.status.set_status("Running batch simulation...")
 
-        thread = threading.Thread(target=self._run_batch)
+        thread = threading.Thread(target=self._run_batch_parallel)
         thread.daemon = True
         thread.start()
 
     def _on_stop(self):
         self.stop_requested = True
         self.status.set_status("Stopping...")
+        if self._executor:
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _run_simulation(self, config: SimulationConfig):
         try:
-            sim = Simulation(config)
-            data = b'\x00' * FILE_SIZE
-            sim.load_data(data)
 
             def progress_cb(progress: float, msg: str):
                 self.after(0, lambda: self.status.set_status(msg, progress))
 
-            result = sim.run(progress_callback=progress_cb)
+            result = run_single_simulation(config, progress_cb=progress_cb)
+
             self.after(0, lambda: self.results.add_result(result))
             self.after(0, lambda: self.status.set_status("Complete", 1.0))
 
@@ -101,46 +103,54 @@ class App(tk.Tk):
         finally:
             self.after(0, self._finish_run)
 
-    def _run_batch(self):
-        total = len(WINDOW_SIZES) * len(FRAME_PAYLOADS) * RUNS_PER_CONFIG
-        current = 0
-
+    def _run_batch_parallel(self):
+        tasks = []
         for w in WINDOW_SIZES:
             for p in FRAME_PAYLOADS:
                 for seed in range(RUNS_PER_CONFIG):
-                    if self.stop_requested:
-                        self.after(0, self._finish_run)
-                        return
+                    tasks.append((w, p, seed))
 
-                    config = SimulationConfig(
-                        window_size=w,
-                        frame_payload_size=p,
-                        file_size=FILE_SIZE,
-                        transport_header_size=TRANSPORT_HEADER_SIZE,
-                        link_header_size=LINK_HEADER_SIZE,
-                        receiver_buffer_size=RECEIVER_BUFFER_SIZE,
-                        seed=seed
-                    )
+        total = len(tasks)
+        completed = 0
+        num_workers = max(1, (os.cpu_count() or 0) - 1)
 
-                    try:
-                        sim = Simulation(config)
-                        data = b'\x00' * FILE_SIZE
-                        sim.load_data(data)
-                        result = sim.run()
+        self.status.set_status(f"Starting batch ({num_workers} workers)...")
 
-                        self.after(0,
-                                   lambda r=result: self.results.add_result(r))
+        try:
+            self._executor = ProcessPoolExecutor(max_workers=num_workers)
+            futures = {
+                self._executor.submit(run_single_simulation, task): task
+                for task in tasks
+            }
 
-                    except Exception:
-                        pass
+            for future in as_completed(futures):
+                if self.stop_requested:
+                    break
 
-                    current += 1
-                    progress = current / total
-                    self.after(0, lambda p=progress, c=current, t=total:
-                               self.status.set_status(f"Run {c}/{t}", p))
+                try:
+                    result = future.result()
+                    self.after(0, lambda r=result: self.results.add_result(r))
+                except Exception:
+                    pass
 
-        self.after(0, lambda: self.status.set_status("Batch complete", 1.0))
-        self.after(0, self._finish_run)
+                completed += 1
+                progress = completed / total
+                self.after(0, lambda p=progress, c=completed, t=total:
+                           self.status.set_status(f"Run {c}/{t}", p))
+
+            if not self.stop_requested:
+                self.after(0,
+                           lambda: self.status.set_status("Batch complete",
+                                                          1.0))
+
+        except Exception as e:
+            self.after(0, lambda e=e: self.status.set_status(f"Error: {e}"))
+
+        finally:
+            if self._executor:
+                self._executor.shutdown(wait=False)
+                self._executor = None
+            self.after(0, self._finish_run)
 
     def _finish_run(self):
         self.running = False

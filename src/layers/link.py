@@ -49,7 +49,7 @@ class SenderState:
         return seq >= self.base or seq < end
 
     def can_send(self) -> bool:
-        outstanding = len(self.buffer)
+        outstanding = (self.next_seq - self.base) % (2 ** 31)
         return outstanding < self.window_size
 
 
@@ -100,11 +100,12 @@ class SelectiveRepeatSender:
     def receive_ack(self, ack_seq: int):
         if ack_seq in self.state.timers:
             del self.state.timers[ack_seq]
+        if ack_seq in self.state.buffer:
             del self.state.buffer[ack_seq]
 
-        while self.state.base not in self.state.buffer:
-            if self.state.base == self.state.next_seq:
-                break
+        while (self.state.base != self.state.next_seq and
+               self.state.base not in self.state.buffer and
+               self.state.base not in self.state.timers):
             self.state.base = (self.state.base + 1) % self.max_seq
 
     def check_timeouts(self, current_time: float) -> list[Frame]:
