@@ -1,6 +1,5 @@
 """Worker functions for multiprocessing simulation runs."""
-from .constants import \
-    TRANSPORT_HEADER_SIZE, LINK_HEADER_SIZE, RECEIVER_BUFFER_SIZE, FILE_SIZE
+from .constants import FILE_SIZE
 from .types import SimulationConfig, SimulationResult
 from .engine import Simulation
 
@@ -23,10 +22,6 @@ def run_single_simulation(args: tuple[int, int, int] | SimulationConfig,
         config = SimulationConfig(
             window_size=window_size,
             frame_payload_size=frame_payload_size,
-            file_size=FILE_SIZE,
-            transport_header_size=TRANSPORT_HEADER_SIZE,
-            link_header_size=LINK_HEADER_SIZE,
-            receiver_buffer_size=RECEIVER_BUFFER_SIZE,
             seed=seed
         )
 

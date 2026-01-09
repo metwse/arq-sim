@@ -1,5 +1,4 @@
 """Core simulation engine for ARQ protocol."""
-
 from .types import SimulationConfig, SimulationResult, ProgressCallback
 
 from dataclasses import dataclass

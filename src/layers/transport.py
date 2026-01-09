@@ -1,56 +1,40 @@
 """Transport layer - segmentation and reassembly."""
+from .link import SimplexLink
+
 from dataclasses import dataclass
 
 
 @dataclass
-class Segment:
-    """Transport layer segment."""
-    payload: bytes
-    is_last: bool = False
+class TransportSenderState:
+    """Selective Repeat sender window state."""
+
+    data: bytes
+    offset: int = 0
 
 
-class TransportSender:
+@dataclass
+class TransportReceiverState:
+    """Selective Repeat receiver window state."""
+
+    received_data: int = 0
+
+
+class SimplexTransport:
     """Transport layer sender - segments data for transmission."""
 
-    def __init__(self, data: bytes, segment_size: int, header_size: int):
-        """Initialize sender with data to transmit.
+    def __init__(self, link: SimplexLink, data: bytes):
+        """Initialize sender with data to transmit."""
+        self.link = link
 
-        Args:
-            data: Data to be transmitted
-            segment_size: Maximum payload size per segment
-            header_size: Size of transport header
-        """
-        self.data = data
-        self.segment_size = segment_size
-        self.header_size = header_size
-        self.offset = 0
+        self.sender = TransportSenderState(data=data)
+        self.receiver = TransportReceiverState()
 
     def has_data(self) -> bool:
         """Check if there is more data to send."""
-        return self.offset < len(self.data)
 
-    def next_segment(self) -> Segment | None:
-        """Get next segment to transmit.
-
-        Returns:
-            Next segment, or None if no more data
-        """
-        raise NotImplementedError("Implement segmentation")
-
-
-class TransportReceiver:
-    """Transport layer receiver - reassembles data."""
-
-    def __init__(self, buffer_capacity: int):
-        """Initialize receiver.
-
-        Args:
-            buffer_capacity: Maximum buffer size for backpressure
-        """
-        self.buffer_capacity = buffer_capacity
-        self.delivered_data = bytearray()
-        self.buffer_full_events = 0
+        return self.sender.offset < len(self.sender.data)
 
     def is_backpressure_active(self) -> bool:
         """Check if receiver buffer is full (backpressure)."""
+
         raise NotImplementedError("Implement backpressure check")

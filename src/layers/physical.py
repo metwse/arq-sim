@@ -1,4 +1,7 @@
 """Physical layer - Gilbert-Elliot channel model."""
+from src.core.channel_config import \
+    BAD_BER, GOOD_BER, P_BAD_TO_GOOD, P_GOOD_TO_BAD
+
 import random
 
 
@@ -8,35 +11,36 @@ class Channel:
     STATE_GOOD = 0
     STATE_BAD = 1
 
-    def __init__(self, good_ber: float, bad_ber: float,
-                 p_good_to_bad: float, p_bad_to_good: float,
-                 rng: random.Random):
-        """Initialize channel with transition probabilities.
+    def __init__(self, rng_seed: int):
+        """Initialize channel with transition probabilities."""
+        self.rng = random.Random(rng_seed)
 
-        Args:
-            good_ber: Bit error rate in good state
-            bad_ber: Bit error rate in bad state
-            p_good_to_bad: Probability of transition from good to bad
-            p_bad_to_good: Probability of transition from bad to good
-            rng: Random number generator for reproducibility
-        """
-        self.good_ber = good_ber
-        self.bad_ber = bad_ber
-        self.p_gb = p_good_to_bad
-        self.p_bg = p_bad_to_good
-        self.rng = rng
         self.state = self.STATE_GOOD
 
     def transmit_frame(self, frame_bits: int) -> bool:
-        """Simulate frame transmission through channel.
-
-        Args:
-            frame_bits: Number of bits in the frame
+        """Simulate transmission of a frame through the channel.
 
         Returns:
-            True if frame is corrupted, False otherwise
+            Whether or not the frame transmitted successfully, True if an error
+            occured.
         """
-        _ = frame_bits
 
-        raise NotImplementedError(
-            "Implement Gilbert-Elliot channel simulation")
+        error = False
+
+        for _ in range(frame_bits):
+            r = self.rng.random()
+
+            if self.state == self.STATE_GOOD:
+                if r < GOOD_BER:
+                    error = True
+
+                if r < P_GOOD_TO_BAD:
+                    self.state = self.STATE_BAD
+            else:
+                if r < BAD_BER:
+                    error = True
+
+                if r < P_BAD_TO_GOOD:
+                    self.state = self.STATE_GOOD
+
+        return error

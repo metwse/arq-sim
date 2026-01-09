@@ -1,6 +1,4 @@
-from src.core.constants import \
-    WINDOW_SIZES, FRAME_PAYLOADS, FILE_SIZE, TRANSPORT_HEADER_SIZE, \
-    LINK_HEADER_SIZE, RECEIVER_BUFFER_SIZE
+from src.core.constants import WINDOW_SIZES, FRAME_PAYLOADS
 from src.core.types import SimulationConfig
 
 import tkinter as tk
@@ -49,9 +47,5 @@ class ParameterPanel(ttk.LabelFrame):
         return SimulationConfig(
             window_size=int(self.window_var.get()),
             frame_payload_size=int(self.payload_var.get()),
-            file_size=FILE_SIZE,
-            transport_header_size=TRANSPORT_HEADER_SIZE,
-            link_header_size=LINK_HEADER_SIZE,
-            receiver_buffer_size=RECEIVER_BUFFER_SIZE,
             seed=int(self.seed_var.get())
         )

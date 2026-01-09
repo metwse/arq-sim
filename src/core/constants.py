@@ -1,16 +1,5 @@
 """Fixed parameters from the assignment specification."""
 
-CHANNEL_CONFIG = {
-    'bit_rate': 10_000_000,
-    'forward_delay': 0.040,
-    'reverse_delay': 0.010,
-    'processing_delay': 0.002,
-    'good_ber': 1e-6,
-    'bad_ber': 5e-3,
-    'p_good_to_bad': 0.002,
-    'p_bad_to_good': 0.05,
-}
-
 FILE_SIZE = 100 * 1024 * 1024
 TRANSPORT_HEADER_SIZE = 8
 LINK_HEADER_SIZE = 24
