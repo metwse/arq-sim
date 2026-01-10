@@ -16,11 +16,16 @@ use tracing::{debug, instrument};
 #[derive(Clone, Debug)]
 pub enum Frame {
     /// Request ready
-    Rr(i64),
+    Rr(u64),
     /// Negative ACK
-    Srej(i64),
+    Srej(u64),
     /// Underlying data array
-    Data(Vec<u8>),
+    Data {
+        /// Seq-num
+        seq: u64,
+        /// Underlying data
+        buf: Vec<u8>,
+    },
     /// Unit type represent a corrupted frame. Ignored by the rx.
     Corrupted,
 }
@@ -31,7 +36,7 @@ impl Frame {
         match self {
             Self::Rr(_) => FRAME_OVERHEAD,
             Self::Srej(_) => FRAME_OVERHEAD,
-            Self::Data(data) => data.len() as u64 * 8 + FRAME_OVERHEAD,
+            Self::Data { buf, .. } => buf.len() as u64 * 8 + FRAME_OVERHEAD,
             _ => unreachable!("unexcepted send of a corrupted frame"),
         }
     }
@@ -42,7 +47,8 @@ pub struct SimplexChannel {
     tx: UnboundedSender<(f64, Frame)>,
     rx: Mutex<UnboundedReceiver<(f64, Frame)>>,
     event_loop: Arc<EventLoop>,
-    propagation_delay: f64,
+    /// One way propagation delay
+    pub propagation_delay: f64,
     is_good: Mutex<bool>,
 }
 
@@ -62,7 +68,7 @@ impl SimplexChannel {
 
     /// Sends a frame.
     #[instrument(skip(self, frame))]
-    pub async fn send(&self, time: f64, frame: Frame) -> (f64, f64) {
+    pub async fn send(&self, time: f64, frame: Frame) -> f64 {
         let mut is_good = self.is_good.lock().await;
         let corrupted;
 
@@ -118,7 +124,7 @@ impl SimplexChannel {
             .await;
         debug!(propagation_duration, rtt, corrupted, "Schedule for send");
 
-        (propagation_duration, rtt)
+        propagation_duration
     }
 
     /// Receives the next frame
@@ -146,7 +152,10 @@ mod tests {
         assert_eq!(srej.size_bits(), FRAME_OVERHEAD);
 
         // Test data frame (header + payload)
-        let data = Frame::Data(vec![0u8; 100]);
+        let data = Frame::Data {
+            seq: 0,
+            buf: vec![0u8; 100],
+        };
         assert_eq!(data.size_bits(), 100 * 8 + FRAME_OVERHEAD);
     }
 
@@ -157,7 +166,10 @@ mod tests {
         let channel = SimplexChannel::new(event_loop.clone(), FORWARD_PATH);
 
         // Send a frame
-        let data = Frame::Data(vec![1, 2, 3]);
+        let data = Frame::Data {
+            buf: vec![1, 2, 3],
+            seq: 0,
+        };
         channel.send(0.0, data.clone()).await;
 
         // The frame should be scheduled in event loop
@@ -176,7 +188,7 @@ mod tests {
 
         // Check frame (might be corrupted or data)
         match recv_frame {
-            Frame::Data(d) => assert_eq!(d, vec![1, 2, 3]),
+            Frame::Data { buf, .. } => assert_eq!(buf, vec![1, 2, 3]),
             Frame::Corrupted => {} // Can happen randomly
             _ => panic!("Unexpected frame type"),
         }
@@ -191,7 +203,15 @@ mod tests {
         // Send 3 frames at different times
         channel.send(0.0, Frame::Rr(1)).await;
         channel.send(0.1, Frame::Srej(2)).await;
-        channel.send(0.2, Frame::Data(vec![1, 2, 3])).await;
+        channel
+            .send(
+                0.2,
+                Frame::Data {
+                    buf: vec![1, 2, 3],
+                    seq: 0,
+                },
+            )
+            .await;
 
         assert_eq!(event_loop.pending_count().await, 3);
 
@@ -238,10 +258,26 @@ mod tests {
         let channel = SimplexChannel::new(event_loop.clone(), FORWARD_PATH);
 
         // Small frame
-        channel.send(0.0, Frame::Data(vec![0u8; 10])).await;
+        channel
+            .send(
+                0.0,
+                Frame::Data {
+                    seq: 0,
+                    buf: vec![0u8; 10],
+                },
+            )
+            .await;
 
         // Large frame
-        channel.send(0.0, Frame::Data(vec![0u8; 1000])).await;
+        channel
+            .send(
+                0.0,
+                Frame::Data {
+                    seq: 0,
+                    buf: vec![0u8; 1000],
+                },
+            )
+            .await;
 
         event_loop.advance().await;
         event_loop.advance().await;

@@ -3,11 +3,15 @@ use std::{
     collections::{BTreeSet, BinaryHeap},
     future::Future,
     pin::Pin,
+    sync::Mutex as StdMutex,
 };
 use tokio::sync::Mutex;
 
 /// A future type that can be scheculed.
 pub type EventFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// A function called in every iteration of advance.
+pub type Tick = Box<dyn Fn() -> () + Send>;
 
 struct Event {
     time: f64,
@@ -40,6 +44,8 @@ pub struct EventLoop {
     events: Mutex<BinaryHeap<Event>>,
     cancelled_events: Mutex<BTreeSet<i64>>,
     event_id: Mutex<i64>,
+    tick: StdMutex<Option<Tick>>,
+    time: StdMutex<f64>,
 }
 
 impl Default for EventLoop {
@@ -48,6 +54,8 @@ impl Default for EventLoop {
             events: Mutex::new(BinaryHeap::new()),
             cancelled_events: Mutex::new(BTreeSet::new()),
             event_id: Mutex::new(0),
+            tick: StdMutex::new(None),
+            time: StdMutex::new(0.0),
         }
     }
 }
@@ -72,8 +80,22 @@ impl EventLoop {
         }
 
         if !has_been_cancelled {
-            event.event.await
+            *self.time.lock().unwrap() = event.time;
+            event.event.await;
+            if let Some(ref tick) = *self.tick.lock().unwrap() {
+                tick();
+            }
         }
+    }
+
+    /// Set tick funciton.
+    pub fn set_tick(&self, tick: Option<Tick>) {
+        *self.tick.lock().unwrap() = tick
+    }
+
+    /// Get last processed event's time.
+    pub fn get_time(&self) -> f64 {
+        *self.time.lock().unwrap()
     }
 
     /// Cancels event with given id

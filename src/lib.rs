@@ -11,3 +11,6 @@ pub mod layers;
 
 /// Frame/timer scheduler.
 pub mod event_loop;
+
+/// Core simulation engine
+pub mod simulation;

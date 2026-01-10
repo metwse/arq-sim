@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use crate::event_loop::EventLoop;
+use crate::{common::PROCESSING_DELAY, event_loop::EventLoop};
 use async_recursion::async_recursion;
 use futures::future::BoxFuture;
 use tokio::sync::Mutex;
@@ -13,20 +13,20 @@ const RECEIVER_BUFFER_SIZE: usize = 256 * 1024; // 256 KB
 /// Link layer sender state
 pub struct Sender {
     /// Send window base (oldest unacknowledged frame)
-    base: i64,
+    base: u64,
     /// Next sequence number to send
-    next_seq: i64,
+    next_seq: u64,
     /// Window size
-    window_size: i64,
+    window_size: u64,
     /// Buffer of sent but unacknowledged frames
-    sent_frames: HashMap<i64, Vec<u8>>,
+    sent_frames: HashMap<u64, Vec<u8>>,
     /// Active timer event IDs for each sequence number
-    timers: HashMap<i64, i64>,
+    timers: HashMap<u64, i64>,
 }
 
 impl Sender {
     /// Creates a new sender
-    pub fn new(window_size: i64) -> Self {
+    pub fn new(window_size: u64) -> Self {
         Self {
             base: 0,
             next_seq: 0,
@@ -42,12 +42,12 @@ impl Sender {
     }
 
     /// Get next sequence number
-    pub fn next_seq(&self) -> i64 {
+    pub fn next_seq(&self) -> u64 {
         self.next_seq
     }
 
     /// Store sent frame and return sequence number
-    pub fn send_frame(&mut self, data: Vec<u8>) -> i64 {
+    pub fn send_frame(&mut self, data: Vec<u8>) -> u64 {
         let seq = self.next_seq;
         self.sent_frames.insert(seq, data);
         self.next_seq += 1;
@@ -55,7 +55,7 @@ impl Sender {
     }
 
     /// Handle ACK - remove frame and slide window
-    pub fn handle_ack(&mut self, seq: i64) {
+    pub fn handle_ack(&mut self, seq: u64) {
         trace!(seq, base = self.base, "Handling ACK");
         // Remove from sent frames
         if self.sent_frames.remove(&seq).is_some() {
@@ -67,12 +67,12 @@ impl Sender {
     }
 
     /// Handle NAK - return frame data for retransmission
-    pub fn handle_nak(&self, seq: i64) -> Option<Vec<u8>> {
+    pub fn handle_nak(&self, seq: u64) -> Option<Vec<u8>> {
         self.sent_frames.get(&seq).cloned()
     }
 
     /// Get frame for timeout retransmission
-    pub fn get_frame_for_timeout(&self, seq: i64) -> Option<Vec<u8>> {
+    pub fn get_frame_for_timeout(&self, seq: u64) -> Option<Vec<u8>> {
         self.sent_frames.get(&seq).cloned()
     }
 }
@@ -80,9 +80,9 @@ impl Sender {
 /// Link layer receiver state
 pub struct Receiver {
     /// Receive window base (next expected sequence number)
-    base: i64,
+    base: u64,
     /// Buffered out-of-order frames
-    buffer: HashMap<i64, Vec<u8>>,
+    buffer: HashMap<u64, Vec<u8>>,
     /// Current buffer size in bytes
     buffer_size: usize,
     /// Maximum buffer size (256 KB)
@@ -109,16 +109,16 @@ impl Receiver {
     /// Receive a frame and return:
     /// - Response frame (Rr for ACK, Srej for NAK, None for corrupted)
     /// - List of delivered payloads (in order)
-    pub fn receive_frame(&mut self, seq: i64, frame: Frame) -> (Option<Frame>, Vec<Vec<u8>>) {
+    pub fn receive_frame(&mut self, frame: Frame) -> (Option<Frame>, Vec<Vec<u8>>) {
         match frame {
             Frame::Corrupted => {
                 // Ignore corrupted frames (timeout will handle)
                 (None, vec![])
             }
-            Frame::Data(data) => {
+            Frame::Data { buf, seq } => {
                 if seq == self.base {
                     // In-order frame - deliver immediately
-                    let mut delivered = vec![data];
+                    let mut delivered = vec![buf];
 
                     // Advance base and deliver any buffered frames
                     self.base += 1;
@@ -128,14 +128,15 @@ impl Receiver {
                         self.base += 1;
                     }
 
-                    // Send ACK
-                    (Some(Frame::Rr(seq)), delivered)
+                    // ACK the LAST delivered frame (not just the received one)
+                    let last_delivered_seq = self.base - 1;
+                    (Some(Frame::Rr(last_delivered_seq)), delivered)
                 } else if seq > self.base {
                     // Out-of-order frame - buffer it if space available
-                    let data_size = data.len();
+                    let data_size = buf.len();
 
                     if self.buffer_size + data_size <= self.max_buffer_size {
-                        self.buffer.insert(seq, data);
+                        self.buffer.insert(seq, buf);
                         self.buffer_size += data_size;
                     }
                     // else: drop frame (buffer full)
@@ -172,7 +173,7 @@ impl SimplexLink {
         forward_channel: Arc<SimplexChannel>,
         reverse_channel: Arc<SimplexChannel>,
         event_loop: Arc<EventLoop>,
-        window_size: i64,
+        window_size: u64,
     ) -> Self {
         Self {
             sender: Arc::new(Mutex::new(Sender::new(window_size))),
@@ -201,9 +202,8 @@ impl SimplexLink {
         debug!(seq, data_len = data.len(), "Sending frame");
 
         // Send through forward channel
-        let frame = Frame::Data(data);
-        let (propagation_duration, rtt) =
-            self.forward_channel.send(current_time, frame.clone()).await;
+        let frame = Frame::Data { buf: data, seq };
+        let propagation_duration = self.forward_channel.send(current_time, frame.clone()).await;
 
         setup_timer(
             SetupTimerEnv {
@@ -211,7 +211,7 @@ impl SimplexLink {
                 forward_channel: Arc::clone(&self.forward_channel),
                 event_loop: Arc::clone(&self.event_loop),
                 seq,
-                rtt,
+                propagation_delay: self.forward_channel.propagation_delay,
             },
             current_time,
         )
@@ -222,13 +222,13 @@ impl SimplexLink {
 
     /// Receive and process frame at receiver
     #[instrument(skip(self, frame))]
-    pub async fn receive_frame(&self, seq: i64, frame: Frame) -> (Option<Frame>, Vec<Vec<u8>>) {
+    pub async fn receive_frame(&self, frame: Frame) -> (Option<Frame>, Vec<Vec<u8>>) {
         let mut receiver = self.receiver.lock().await;
-        receiver.receive_frame(seq, frame)
+        receiver.receive_frame(frame)
     }
 
     /// Handle ACK reception at sender
-    pub async fn handle_ack(&self, seq: i64) {
+    pub async fn handle_ack(&self, seq: u64) {
         let mut sender = self.sender.lock().await;
 
         // Cancel timer
@@ -240,14 +240,26 @@ impl SimplexLink {
     }
 
     /// Handle NAK reception at sender
-    pub async fn handle_nak(&self, current_time: f64, seq: i64) {
+    pub async fn handle_nak(&self, current_time: f64, seq: u64) {
         let sender = self.sender.lock().await;
 
         if let Some(data) = sender.handle_nak(seq) {
             // Retransmit immediately on forward channel
             self.forward_channel
-                .send(current_time, Frame::Data(data))
+                .send(current_time, Frame::Data { buf: data, seq })
                 .await;
+
+            setup_timer(
+                SetupTimerEnv {
+                    sender: Arc::clone(&self.sender),
+                    forward_channel: Arc::clone(&self.forward_channel),
+                    event_loop: Arc::clone(&self.event_loop),
+                    seq,
+                    propagation_delay: self.forward_channel.propagation_delay,
+                },
+                current_time,
+            )
+            .await;
         }
     }
 
@@ -257,14 +269,14 @@ impl SimplexLink {
     }
 
     /// Send ACK on reverse channel
-    pub async fn send_ack(&self, current_time: f64, seq: i64) {
+    pub async fn send_ack(&self, current_time: f64, seq: u64) {
         self.reverse_channel
             .send(current_time, Frame::Rr(seq))
             .await;
     }
 
     /// Send NAK on reverse channel
-    pub async fn send_nak(&self, current_time: f64, seq: i64) {
+    pub async fn send_nak(&self, current_time: f64, seq: u64) {
         self.reverse_channel
             .send(current_time, Frame::Srej(seq))
             .await;
@@ -276,14 +288,14 @@ struct SetupTimerEnv {
     sender: Arc<Mutex<Sender>>,
     forward_channel: Arc<SimplexChannel>,
     event_loop: Arc<EventLoop>,
-    seq: i64,
-    rtt: f64,
+    seq: u64,
+    propagation_delay: f64,
 }
 
 #[async_recursion]
 #[instrument(skip(env))]
 async fn setup_timer(env: SetupTimerEnv, current_time: f64) {
-    let timeout_time = current_time + env.rtt * 2.5;
+    let timeout_time = current_time + env.propagation_delay * 2.5 + PROCESSING_DELAY;
 
     let timer_fut: BoxFuture<'static, ()> = Box::pin({
         let env = env.clone();
@@ -297,9 +309,15 @@ async fn setup_timer(env: SetupTimerEnv, current_time: f64) {
                 if let Some(data) = sender.get_frame_for_timeout(env.seq) {
                     // Retransmit on forward channel
                     env.forward_channel
-                        .send(timeout_time, Frame::Data(data))
+                        .send(
+                            timeout_time,
+                            Frame::Data {
+                                buf: data,
+                                seq: env.seq,
+                            },
+                        )
                         .await;
-                    debug!(seq=env.seq, "Retransmit frame");
+                    debug!(seq = env.seq, "Retransmit frame");
 
                     retransmitted = true;
                 }
@@ -312,10 +330,13 @@ async fn setup_timer(env: SetupTimerEnv, current_time: f64) {
     });
 
     let timer_id = env.event_loop.schedule(timeout_time, timer_fut).await;
-    debug!(seq=env.seq, "Set retransmission timer");
+    debug!(seq = env.seq, "Set retransmission timer");
 
     let mut sender = env.sender.lock().await;
-    sender.timers.remove(&env.seq);
+    if let Some(timer_id) = sender.timers.remove(&env.seq) {
+        debug!(seq = env.seq, "Cancel previous retransmission timer");
+        env.event_loop.cancel(timer_id).await;
+    }
     sender.timers.insert(env.seq, timer_id);
 }
 
@@ -333,7 +354,12 @@ mod tests {
         let forward_channel = Arc::new(SimplexChannel::new(Arc::clone(&event_loop), FORWARD_PATH));
         let reverse_channel = Arc::new(SimplexChannel::new(Arc::clone(&event_loop), REVERSE_PATH));
 
-        let link = SimplexLink::new(forward_channel, reverse_channel, Arc::clone(&event_loop), 4);
+        let link = SimplexLink::new(
+            forward_channel.clone(),
+            reverse_channel.clone(),
+            Arc::clone(&event_loop),
+            4,
+        );
 
         tokio::spawn({
             let event_loop = Arc::clone(&event_loop);
@@ -348,22 +374,18 @@ mod tests {
             }
         });
 
-        link.send_data(0.0, vec![0; 10000]).await;
-        link.send_data(1.0, vec![0; 10001]).await;
-        link.send_data(2.0, vec![0; 10002]).await;
-        link.send_data(3.0, vec![0; 10003]).await;
+        link.send_data(0.0, vec![0; 10000]).await.unwrap();
+        link.send_data(0.2, vec![0; 10001]).await.unwrap();
+        link.send_data(0.3, vec![0; 10002]).await.unwrap();
+        link.send_data(0.4, vec![0; 10003]).await.unwrap();
 
-        tokio::time::sleep(Duration::from_secs(4)).await;
         link.handle_ack(0).await;
-        link.send_data(4.0, vec![0; 10004]).await;
-        tokio::time::sleep(Duration::from_secs(1)).await;
         link.handle_ack(1).await;
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        link.send_data(0.6, vec![0; 10005]).await.unwrap();
+        tokio::time::sleep(Duration::from_secs_f64(0.5)).await;
         link.handle_ack(2).await;
-        tokio::time::sleep(Duration::from_secs(1)).await;
         link.handle_ack(3).await;
-        tokio::time::sleep(Duration::from_secs(1)).await;
         link.handle_ack(4).await;
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs_f64(0.5)).await;
     }
 }
