@@ -9,5 +9,5 @@ pub mod common;
 /// Network layers.
 pub mod layers;
 
-/// Core network types.
-pub mod core;
+/// Frame/timer scheduler.
+pub mod event_loop;
