@@ -133,7 +133,7 @@ impl SimplexChannel {
 
     /// Receives the next frame
     #[instrument(skip(self))]
-    pub async fn receive(&mut self) -> (f64, Frame) {
+    pub async fn receive(&self) -> (f64, Frame) {
         let (time, frame) = self.rx.lock().await.recv().await.unwrap();
         debug!(time, frame=?frame, "Received frame");
 
@@ -164,7 +164,7 @@ mod tests {
     #[test_log::test]
     async fn test_channel_send_receive() {
         let event_loop = Arc::new(EventLoop::default());
-        let mut channel = SimplexChannel::new(event_loop.clone(), FORWARD_PATH);
+        let channel = SimplexChannel::new(event_loop.clone(), FORWARD_PATH);
 
         // Send a frame
         let data = Frame::Data(vec![1, 2, 3]);
@@ -196,7 +196,7 @@ mod tests {
     #[test_log::test]
     async fn test_multiple_frames() {
         let event_loop = Arc::new(EventLoop::default());
-        let mut channel = SimplexChannel::new(event_loop.clone(), FORWARD_PATH);
+        let channel = SimplexChannel::new(event_loop.clone(), FORWARD_PATH);
 
         // Send 3 frames at different times
         channel.send(0.0, Frame::Rr(1)).await;
@@ -225,7 +225,7 @@ mod tests {
     async fn test_propagation_delay() {
         let event_loop = Arc::new(EventLoop::default());
         let propagation_delay = 0.05; // 50ms
-        let mut channel = SimplexChannel::new(event_loop.clone(), propagation_delay);
+        let channel = SimplexChannel::new(event_loop.clone(), propagation_delay);
 
         let send_time = 1.0;
         channel.send(send_time, Frame::Rr(1)).await;
@@ -245,7 +245,7 @@ mod tests {
     #[test_log::test]
     async fn test_different_frame_sizes() {
         let event_loop = Arc::new(EventLoop::default());
-        let mut channel = SimplexChannel::new(event_loop.clone(), FORWARD_PATH);
+        let channel = SimplexChannel::new(event_loop.clone(), FORWARD_PATH);
 
         // Small frame
         channel.send(0.0, Frame::Data(vec![0u8; 10])).await;
@@ -267,7 +267,7 @@ mod tests {
     #[test_log::test]
     async fn test_ack_nak_frames() {
         let event_loop = Arc::new(EventLoop::default());
-        let mut channel = SimplexChannel::new(event_loop.clone(), REVERSE_PATH);
+        let channel = SimplexChannel::new(event_loop.clone(), REVERSE_PATH);
 
         // Send ACK
         channel.send(0.0, Frame::Rr(42)).await;
