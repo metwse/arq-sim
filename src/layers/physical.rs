@@ -10,7 +10,7 @@ use tokio::{
     },
     task,
 };
-use tracing::{debug, instrument, trace};
+use tracing::{debug, instrument};
 
 /// Pyhsical layer frame
 #[derive(Clone, Debug)]
@@ -62,11 +62,9 @@ impl SimplexChannel {
 
     /// Sends a frame.
     #[instrument(skip(self, frame))]
-    pub async fn send(&self, time: f64, frame: Frame) -> f64 {
+    pub async fn send(&self, time: f64, frame: Frame) -> (f64, f64) {
         let mut is_good = self.is_good.lock().await;
         let corrupted;
-
-        trace!(is_good = *is_good, "Running state changer");
 
         (corrupted, *is_good) = task::spawn_blocking({
             let mut next_state = *is_good;
@@ -103,32 +101,24 @@ impl SimplexChannel {
 
         let propagation_duration: f64 = frame.size_bits() as f64 / BIT_RATE as f64;
 
-        let receive_time = time + propagation_duration + self.propagation_delay + PROCESSING_DELAY;
-
-        trace!(is_good = *is_good, "Updated state");
-        debug!(
-            propagation_duration,
-            receive_time, corrupted, "Schedule for recv"
-        );
+        let rtt = propagation_duration + self.propagation_delay + PROCESSING_DELAY;
 
         self.event_loop
             .schedule(
-                receive_time,
+                time + rtt,
                 Box::pin({
                     let tx = self.tx.clone();
 
                     async move {
-                        tx.send((
-                            receive_time,
-                            if corrupted { Frame::Corrupted } else { frame },
-                        ))
-                        .ok();
+                        tx.send((time + rtt, if corrupted { Frame::Corrupted } else { frame }))
+                            .ok();
                     }
                 }),
             )
             .await;
+        debug!(propagation_duration, rtt, corrupted, "Schedule for send");
 
-        propagation_duration
+        (propagation_duration, rtt)
     }
 
     /// Receives the next frame
