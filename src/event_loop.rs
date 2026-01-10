@@ -77,12 +77,12 @@ impl EventLoop {
     }
 
     /// Cancels event with given id
-    pub async fn cancel(&mut self, event_id: i64) {
+    pub async fn cancel(&self, event_id: i64) {
         self.cancelled_events.lock().await.insert(event_id);
     }
 
     /// Schedules a new event
-    pub async fn schedule(&mut self, event: EventFuture, time: f64) -> i64 {
+    pub async fn schedule(&self, time: f64, event: EventFuture) -> i64 {
         let mut events = self.events.lock().await;
         let mut event_id = self.event_id.lock().await;
 
@@ -108,20 +108,20 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_schedule_and_advance() {
-        let mut event_loop = EventLoop::default();
+        let event_loop = EventLoop::default();
         let executed = Arc::new(TokioMutex::new(false));
 
         let executed_clone = executed.clone();
         event_loop
             .schedule(
+                1.0,
                 Box::pin(async move {
                     *executed_clone.lock().await = true;
                 }),
-                1.0,
             )
             .await;
 
-        assert!(*executed.lock().await);
+        assert!(!*executed.lock().await);
 
         event_loop.advance().await;
 
@@ -131,37 +131,37 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_event_ordering() {
-        let mut event_loop = EventLoop::default();
+        let event_loop = EventLoop::default();
         let order = Arc::new(TokioMutex::new(Vec::new()));
 
         // Schedule events out of order
         let order_clone = order.clone();
         event_loop
             .schedule(
+                3.0,
                 Box::pin(async move {
                     order_clone.lock().await.push(3);
                 }),
-                3.0,
             )
             .await;
 
         let order_clone = order.clone();
         event_loop
             .schedule(
+                1.0,
                 Box::pin(async move {
                     order_clone.lock().await.push(1);
                 }),
-                1.0,
             )
             .await;
 
         let order_clone = order.clone();
         event_loop
             .schedule(
+                2.0,
                 Box::pin(async move {
                     order_clone.lock().await.push(2);
                 }),
-                2.0,
             )
             .await;
 
@@ -177,26 +177,26 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_event_cancellation() {
-        let mut event_loop = EventLoop::default();
+        let event_loop = EventLoop::default();
         let executed = Arc::new(TokioMutex::new(Vec::new()));
 
         let executed_clone = executed.clone();
         let id1 = event_loop
             .schedule(
+                1.0,
                 Box::pin(async move {
                     executed_clone.lock().await.push(1);
                 }),
-                1.0,
             )
             .await;
 
         let executed_clone = executed.clone();
         event_loop
             .schedule(
+                2.0,
                 Box::pin(async move {
                     executed_clone.lock().await.push(2);
                 }),
-                2.0,
             )
             .await;
 
@@ -214,7 +214,7 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_multiple_events_same_time() {
-        let mut event_loop = EventLoop::default();
+        let event_loop = EventLoop::default();
         let executed = Arc::new(TokioMutex::new(Vec::new()));
 
         // Schedule multiple events at same time
@@ -222,10 +222,10 @@ mod tests {
             let executed_clone = executed.clone();
             event_loop
                 .schedule(
+                    1.0,
                     Box::pin(async move {
                         executed_clone.lock().await.push(i);
                     }),
-                    1.0,
                 )
                 .await;
         }
@@ -241,12 +241,12 @@ mod tests {
     #[tokio::test]
     #[test_log::test]
     async fn test_pending_count() {
-        let mut event_loop = EventLoop::default();
+        let event_loop = EventLoop::default();
 
         assert_eq!(event_loop.pending_count().await, 0);
 
-        event_loop.schedule(Box::pin(async {}), 1.0).await;
-        event_loop.schedule(Box::pin(async {}), 2.0).await;
+        event_loop.schedule(1.0, Box::pin(async {})).await;
+        event_loop.schedule(2.0, Box::pin(async {})).await;
 
         assert_eq!(event_loop.pending_count().await, 2);
 
