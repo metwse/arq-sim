@@ -3,14 +3,8 @@
 #![forbid(unsafe_code, unused_must_use)]
 #![warn(clippy::all, missing_docs)]
 
-/// Common channel config.
-pub mod common;
+mod channel;
 
-/// Network layers.
-pub mod layers;
+pub use channel::GilbertElliotChannel;
 
-/// Frame/timer scheduler.
-pub mod event_loop;
-
-/// Core simulation engine
 pub mod simulation;

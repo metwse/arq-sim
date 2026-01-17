@@ -1,8 +1,8 @@
+use arq_sim::simulation::simulate_arq;
 use dotenvy::dotenv;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-#[tokio::main]
-async fn main() {
+fn main() {
     dotenv().ok();
 
     tracing_subscriber::registry()
@@ -12,4 +12,6 @@ async fn main() {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
+
+    simulate_arq(1024, 256);
 }

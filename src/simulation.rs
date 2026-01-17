@@ -1,136 +1,116 @@
-use tokio::sync::Mutex;
-use tracing::info;
+//! Main simulation worker.
 
-use crate::{common::*, event_loop};
-use crate::layers::physical::Frame;
-use crate::{
-    event_loop::EventLoop,
-    layers::{link::SimplexLink, physical::SimplexChannel},
-};
-use std::sync::Arc;
-use std::time::Duration;
+use tracing::trace;
+use crate::GilbertElliotChannel;
+use std::cmp::Reverse;
+use std::collections::{hash_map::Entry, BinaryHeap, HashMap};
 
-/// Start the simulation
-pub async fn run(window_size: u64, frame_size: usize, data: Vec<u8>) {
-    let event_loop = Arc::new(EventLoop::default());
-    let forward_channel = Arc::new(SimplexChannel::new(Arc::clone(&event_loop), FORWARD_PATH));
-    let reverse_channel = Arc::new(SimplexChannel::new(Arc::clone(&event_loop), REVERSE_PATH));
-    let last_sent_segment = Arc::new(Mutex::new(window_size));
+static FILE_SIZE_BYTES: u64 = 1_000_000;
 
-    let link = Arc::new(SimplexLink::new(
-        forward_channel.clone(),
-        reverse_channel.clone(),
-        Arc::clone(&event_loop),
-        window_size,
-    ));
+static FRAME_PROP_DELAY_FWD: f64 = 0.040;
+static FRAME_PROP_DELAY_REV: f64 = 0.010;
+static FRAME_PRCS_DELAY: f64 = 0.002;
 
-    let segment_count = data.len().div_ceil(frame_size);
-    let mut segments = Vec::with_capacity(segment_count);
+static BIT_RATE: f64 = 1e7;
 
-    for i in 0..segment_count {
-        segments.push(Vec::from(
-            &data[i * frame_size..((i + 1) * frame_size).min(data.len())],
-        ));
-    }
+/// Transmission + link layer header's size, in bits.
+static TOTAL_FRAME_OVERHEAD: u64 = 32;
 
-    let mut time = 0.0;
-    for segment in segments.iter().take(window_size as usize) {
-        time += link.send_data(time, segment.clone()).await.unwrap();
-    }
+/// Round-trip time
+static RTT: f64 = FRAME_PROP_DELAY_REV + FRAME_PROP_DELAY_FWD + FRAME_PRCS_DELAY * 2.0;
 
-    event_loop.set_tick({
-        let event_loop = Arc::clone(&event_loop);
-        let link = Arc::clone(&link);
-        let segments = Arc::new(segments);
-        let last_sent_segment = Arc::clone(&last_sent_segment);
+/// Use minimum margin for timeouts
+static TIMEOUT_MARGIN: f64 = 1.005;
+static BASE_TIMEOUT: f64 = RTT * TIMEOUT_MARGIN;
 
-        Some(Box::new(move || {
-            let event_loop = Arc::clone(&event_loop);
-            let link = Arc::clone(&link);
-            let segments = Arc::clone(&segments);
-            let last_sent_segment = Arc::clone(&last_sent_segment);
-
-            tokio::spawn(async move {
-                let mut last_sent_segment = last_sent_segment.lock().await;
-
-                if *last_sent_segment < segment_count as u64
-                    && link
-                        .send_data(event_loop.get_time(), segments[*last_sent_segment as usize].clone())
-                        .await
-                        .is_some()
-                {
-                    *last_sent_segment += 1;
-                }
-            });
-        }))
-    });
-
-    // simulation task
-    tokio::spawn({
-        let event_loop = Arc::clone(&event_loop);
-
-        async move {
-            loop {
-                while event_loop.pending_count().await > 0 {
-                    event_loop.advance().await;
-                }
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-        }
-    });
-
-    // receiver entity
-    tokio::spawn({
-        let forward_channel = Arc::clone(&forward_channel);
-        let reverse_channel = Arc::clone(&reverse_channel);
-        let link = Arc::clone(&link);
-
-        async move {
-            loop {
-                let (time, frame) = forward_channel.receive().await;
-
-                let (response, _) = link.receive_frame(frame).await;
-
-                if let Some(response) = response {
-                    reverse_channel.send(time, response).await;
-                }
-            }
-        }
-    });
-
-    // handle acks from receiver
-    tokio::spawn({
-        let reverse_channel = Arc::clone(&reverse_channel);
-        let link = Arc::clone(&link);
-
-        async move {
-            loop {
-                let (time, frame) = reverse_channel.receive().await;
-
-                match frame {
-                    Frame::Rr(seq) => {
-                        link.handle_ack(seq).await;
-                    }
-                    Frame::Srej(seq) => {
-                        link.handle_nak(time, seq).await;
-                    }
-                    Frame::Corrupted => {}
-                    _ => unreachable!("Unexcepted Data"),
-                }
-            }
-        }
-    });
-
-    tokio::time::sleep(Duration::from_secs(100)).await;
+#[derive(Debug)]
+struct Frame {
+    ack_receiving_time: f64,
+    success: bool,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Runs the selective-repeat ARQ simulation.
+///
+/// This implementation does use timeout instead of NACKs since there is no
+/// network jitter or congestion.
+pub fn simulate_arq(w: u64, l: u64) {
+    let frame_total_size = (l + TOTAL_FRAME_OVERHEAD) * 8;
+    let trans_time_per_frame = frame_total_size as f64 / BIT_RATE;
 
-    #[tokio::test]
-    #[test_log::test]
-    pub async fn test_simulation() {
-        run(8, 2, vec![0; 10_000_000]).await;
+    let timeout = BASE_TIMEOUT + trans_time_per_frame * TIMEOUT_MARGIN;
+
+    let num_frames = FILE_SIZE_BYTES.div_ceil(l);
+
+    let ack_size_bits = (l as f64).log2().ceil() as u64;
+    let frame_size_bits = (TOTAL_FRAME_OVERHEAD + l) * 8;
+
+    let mut send_base = 0;
+    let mut send_time: HashMap<u64, Frame> = HashMap::new();
+
+    let mut fwd_channel = GilbertElliotChannel::new();
+    let mut rev_channel = GilbertElliotChannel::new();
+
+    let mut transmitting_time = 0.0;
+
+    let mut retransmissions = 0;
+    let mut acked = BinaryHeap::new();
+
+    trace!(num_frames, w, l, "Simulation initialized");
+
+    while send_base < num_frames {
+        let window_end = num_frames.min(send_base + w);
+        let mut action_taken = false;
+
+        // send new frames, or retransmit failed one
+        for seq_num in send_base..window_end {
+            if let Entry::Vacant(e) = send_time.entry(seq_num) {
+                if acked.as_slice().contains(&Reverse(seq_num)) {
+                    continue;
+                }
+
+                let success = fwd_channel.frame_success(frame_size_bits) && rev_channel.frame_success(ack_size_bits);
+                e.insert(Frame {
+                    ack_receiving_time: transmitting_time + timeout,
+                    success,
+                });
+                transmitting_time += trans_time_per_frame;
+                action_taken = true;
+            }
+        }
+
+        let mut will_delete = Vec::new();
+        for (&seq_num, frame) in send_time.iter() {
+            if frame.ack_receiving_time >= transmitting_time {
+                continue;
+            }
+
+            if frame.success {
+                acked.push(Reverse(seq_num));
+            } else {
+                retransmissions += 1;
+            }
+
+            will_delete.push(seq_num);
+        }
+
+        while let Some(&Reverse(top)) = acked.peek() && top == send_base {
+            acked.pop();
+            send_base += 1;
+
+            if send_base % l == 0 {
+                trace!(send_base);
+            }
+        }
+
+        for seq_num in will_delete {
+            send_time.remove(&seq_num).unwrap();
+        }
+
+        if !action_taken {
+            transmitting_time += 0.00001;
+        }
     }
+
+    let goodput = FILE_SIZE_BYTES as f64 / transmitting_time;
+    trace!(goodput, retransmissions, transmitting_time, "Simulation stats")
 }
