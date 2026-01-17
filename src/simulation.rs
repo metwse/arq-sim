@@ -1,11 +1,11 @@
 //! Main simulation worker.
 
-use tracing::trace;
 use crate::GilbertElliotChannel;
 use std::cmp::Reverse;
-use std::collections::{hash_map::Entry, BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, hash_map::Entry};
+use tracing::{debug, info, trace};
 
-static FILE_SIZE_BYTES: u64 = 1_000_000;
+static FILE_SIZE_BYTES: u64 = 100_000_000;
 
 static FRAME_PROP_DELAY_FWD: f64 = 0.040;
 static FRAME_PROP_DELAY_REV: f64 = 0.010;
@@ -55,7 +55,7 @@ pub fn simulate_arq(w: u64, l: u64) {
     let mut retransmissions = 0;
     let mut acked = BinaryHeap::new();
 
-    trace!(num_frames, w, l, "Simulation initialized");
+    info!(num_frames, w, l, "Simulation initialized");
 
     while send_base < num_frames {
         let window_end = num_frames.min(send_base + w);
@@ -68,7 +68,8 @@ pub fn simulate_arq(w: u64, l: u64) {
                     continue;
                 }
 
-                let success = fwd_channel.frame_success(frame_size_bits) && rev_channel.frame_success(ack_size_bits);
+                let success = fwd_channel.frame_success(frame_size_bits)
+                    && rev_channel.frame_success(ack_size_bits);
                 e.insert(Frame {
                     ack_receiving_time: transmitting_time + timeout,
                     success,
@@ -78,6 +79,7 @@ pub fn simulate_arq(w: u64, l: u64) {
             }
         }
 
+        // ack successful frames
         let mut will_delete = Vec::new();
         for (&seq_num, frame) in send_time.iter() {
             if frame.ack_receiving_time >= transmitting_time {
@@ -93,12 +95,21 @@ pub fn simulate_arq(w: u64, l: u64) {
             will_delete.push(seq_num);
         }
 
-        while let Some(&Reverse(top)) = acked.peek() && top == send_base {
+        // update base of sliding window
+        while let Some(&Reverse(top)) = acked.peek()
+            && top == send_base
+        {
             acked.pop();
             send_base += 1;
 
-            if send_base % l == 0 {
-                trace!(send_base);
+            if send_base % w == 0 {
+                let goodput = (send_base * l) as f64 / transmitting_time;
+                trace!(
+                    send_base,
+                    goodput,
+                    "Simulation is {:.2}% complete",
+                    (send_base as f64 / num_frames as f64) * 100.0
+                );
             }
         }
 
@@ -112,5 +123,8 @@ pub fn simulate_arq(w: u64, l: u64) {
     }
 
     let goodput = FILE_SIZE_BYTES as f64 / transmitting_time;
-    trace!(goodput, retransmissions, transmitting_time, "Simulation stats")
+    debug!(
+        goodput,
+        retransmissions, transmitting_time, "Simulation stats"
+    )
 }
