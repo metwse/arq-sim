@@ -42,8 +42,8 @@ pub struct SimulationStats {
 /// This implementation does use timeout instead of NACKs since there is no
 /// network jitter or congestion.
 pub fn simulate_arq(w: u64, l: u64) -> SimulationStats {
-    // + 1 for trasport layer overhead
-    let frame_total_size = (l + TOTAL_FRAME_OVERHEAD + 1) * 8;
+    // + 8 for trasport layer overhead
+    let frame_total_size = (l + TOTAL_FRAME_OVERHEAD + 8) * 8;
     let trans_time_per_frame = frame_total_size as f64 / BIT_RATE;
 
     let timeout = BASE_TIMEOUT + trans_time_per_frame * TIMEOUT_MARGIN;
