@@ -11,6 +11,11 @@ rand = "0.9"
 
 dotenvy = "0.15"
 
+# CLI and parameter search dependencies
+clap = { version = "4.5", features = ["derive"] }
+rayon = "1.10"
+indicatif = "0.17"
+
 [dev-dependencies]
 test-log = { version = "0.2", default-features = false, features = ["trace"] }
 serial_test = "3"

@@ -5,6 +5,8 @@
 
 mod channel;
 
+mod simulation;
+
 pub use channel::GilbertElliotChannel;
 
-pub mod simulation;
+pub use simulation::{SimulationStats, simulate_arq};
