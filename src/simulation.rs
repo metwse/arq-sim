@@ -50,7 +50,7 @@ pub fn simulate_arq(w: u64, l: u64) -> SimulationStats {
 
     let num_frames = FILE_SIZE_BYTES.div_ceil(l);
 
-    let ack_size_bits = (l as f64).log2().ceil() as u64;
+    let ack_size_bits = (l as f64).log2().ceil() as u64 + 3;
     let frame_size_bits = (TOTAL_FRAME_OVERHEAD + l) * 8;
 
     let mut send_base = 0;
